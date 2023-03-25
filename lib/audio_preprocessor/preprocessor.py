@@ -4,6 +4,7 @@ import py_midicsv as pm     # Used for MIDI preprocessing
 from multiset import Multiset
 import pandas as pd 
 import os 
+import librosa
 
 class InvalidMIDIFileException(Exception):
     """An exception that is raised when a MIDI file is invalid
@@ -32,10 +33,11 @@ class AudioPreprocessor:
     NOTE_EVENT_NAMES : List[str] = [ONSET_EVENT_NAME, OFFSET_EVENT_NAME]
 
     ### METHODS
-    def __init__(self, midi_file : str):
+    def __init__(self, midi_file : str, wav_file : str):
         # Parse the MIDI to CSV, and store it in the parsed_csvs directory
         self.midi_file : str = midi_file 
         self.csv_file : str = self._midi_to_csv(midi_file)
+        self.wav_file : str = wav_file
         self.chord_events : List[Tuple] = self._parse_csv(self.csv_file)
 
     def _midi_to_csv(self, midi_file : str) -> str:
@@ -44,7 +46,6 @@ class AudioPreprocessor:
         Parameters:
             midi_file (str): A fully qualified filepath to the MIDI file \
                 to parse 
-
         Returns:
             csv_file (str): A fully qualified filepath to the parsed \
                 CSV file
@@ -55,7 +56,7 @@ class AudioPreprocessor:
         csv_dir = os.path.join(midi_parent_dir, 'parsed_csvs')
         if not os.path.isdir(csv_dir):
             os.mkdir(csv_dir)
-        
+
         # Get a full path to the output CSV file (inside a directory called 'parsed_csvs')
         midi_filename_no_ext = os.path.splitext(os.path.basename(midi_file))[0]
         csv_filename = midi_filename_no_ext + '.csv'
@@ -67,7 +68,7 @@ class AudioPreprocessor:
         # Write the CSV out to the desired output location
         with open(csv_file, "w") as f:
             f.writelines(csv_string) 
-        
+
         return csv_file 
 
     def _parse_csv(self, csv_path : str):
@@ -109,7 +110,6 @@ class AudioPreprocessor:
         Returns:
             note_events (List[Tuple]): A list with entries \
                 [(time, '+' (for onset) or '-' (for offset), MIDI Note Value)]
-
         Raises:
             InvalidMIDIFileException : If the number of onset events \
                 does not equal the number of offset events 
@@ -117,12 +117,12 @@ class AudioPreprocessor:
         # Parse the onset and offset events
         on_events = piece.loc[piece['event_name'] == self.ONSET_EVENT_NAME]
         off_events = piece.loc[piece['event_name'] == self.OFFSET_EVENT_NAME]
-        
+
         # Double check we have the same number of events. If not, terminate early
         if len(on_events) != len(off_events):
             msg = f"Error: {self.midi_file} has unequal number of note onsets and note offsets"
             raise InvalidMIDIFileException(msg)
-        
+
         # Parse note onsets and offsets as tuples 
         on_events_tups = [(tup[0], '+', tup[1]) for tup in zip(on_events['time'], on_events['MIDI_pitch_num'])] 
         off_events_tups = [(tup[0], '-', tup[1]) for tup in zip(off_events['time'], off_events['MIDI_pitch_num'])]
@@ -135,14 +135,11 @@ class AudioPreprocessor:
 
     def _get_chord_events(self, note_events : Sequence[Tuple]) -> List[Tuple]:
         """Get chords from a sequence of note events.
-
         Inspired by 
         https://stackoverflow.com/questions/628837/how-to-divide-a-set-of-overlapping-ranges-into-non-overlapping-ranges
-
         Parameters:
             note_events (List[Tuple]): A list with entries \
                 [(time, '+' (for onset) or '-' (for offset), MIDI Note Value)]
-
         Returns:
             chord_events (List[Tuple]): A list with entries \
                 [([List of chord note_values], onset_time, offset_time)]
@@ -158,7 +155,7 @@ class AudioPreprocessor:
             # from the previous event time to the current event time
             if cur_time != last_event_time: # Current time splits into old interval
                 chord_events.append((last_event_time ,cur_time, sorted(list(set(currently_sounding)))))
-            
+
             # Add/remove notes from currently sounding based off of what kind of event this is 
             if marker == '+':       # Onset event 
                 currently_sounding.add(midi_val)
@@ -170,7 +167,63 @@ class AudioPreprocessor:
 
         # Return our chord events 
         return chord_events 
+
+    def continuous_q(self, wav_path, n_bins=84):
+        """Gets the continuous Q transform for audio file
+        Parameters
+            wav_path (str): Filepath to wav file
+            n_bins (int): Number of frequency bins
+        
+        Returns
+            cqts (ndarray(n_bins, n_frames)): list of continuous Q transforms"""
+        y, sr = librosa.load(wav_path)
+        cqt = (librosa.cqt(y, sr=sr, n_bins=n_bins))
+
+        return cqt
+
+    def get_mfcc(self, wav_path, delta_bool):
+        """Gets the MFCC coefficients for an audio file as well as the \
+            estimate of the derivative if desired
+        
+        Parameters
+            wav_path (list): List of filepaths to wav file
+            delta_bool (bool): Boolean for whether or not we want to compute \
+                the delta feature of the wav file
             
+        Returns 
+            mfcc_coeffs (ndarray(n_mfcc, n_frames)): MFCC coefficients for \
+                each file
+            mfcc_delta_coeffs (ndarray(n_mfcc, n_frames)): Local estimate of \
+                the derivative of the input file"""
+        y, sr = librosa.load(wav_path)
+        mfcc_coeffs = librosa.feature.mfcc(y=y, sr=sr)
+
+        if delta_bool:
+            mfcc_delta_coeffs = librosa.feature.delta(mfcc_coeffs)
+            return mfcc_coeffs, mfcc_delta_coeffs
+
+        return mfcc_coeffs
+
+    def misc_data(self, wav_path):
+        """Gets miscellaneous data from a .wav file including estimated \
+            tempo, beat frames, beat times
+        
+        Parameters
+            filepaths: list of filepaths
+            
+        Returns 
+            tempo (float64): Estimated tempo for each file
+            beat_frame (ndarray()): Beat frames for each file
+            beat_time (ndarray()): Beat times for each file"""
+
+        y, sr = librosa.load(wav_path)
+        tempo, beat_frame = librosa.beat.beat_track(y=y, sr=sr)
+        beat_time = librosa.frames_to_time(beat_frame, sr=sr)
+
+        return tempo, beat_frame, beat_time
+
+
+
 
 if __name__ == "__main__":
     midi_file = '/Users/mymac/ACME/proj/v3_winter/score-following/data/midi/wtk1-fugue8.mid'
