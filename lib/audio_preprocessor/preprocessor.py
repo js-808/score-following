@@ -5,6 +5,8 @@ from multiset import Multiset
 import pandas as pd 
 import os 
 import librosa
+from scipy.stats import norm
+from pydub import AudioSegment
 
 class InvalidMIDIFileException(Exception):
     """An exception that is raised when a MIDI file is invalid
@@ -154,7 +156,7 @@ class AudioPreprocessor:
             # If we have moved our current time, record which notes were sounding
             # from the previous event time to the current event time
             if cur_time != last_event_time: # Current time splits into old interval
-                chord_events.append((last_event_time ,cur_time, sorted(list(set(currently_sounding)))))
+                chord_events.append((last_event_time, cur_time, sorted(list(set(currently_sounding)))))
 
             # Add/remove notes from currently sounding based off of what kind of event this is 
             if marker == '+':       # Onset event 
@@ -168,7 +170,7 @@ class AudioPreprocessor:
         # Return our chord events 
         return chord_events 
 
-    def continuous_q(self, wav_path, n_bins=84):
+    def continuous_q(self, wav_path, n_bins=88):
         """Gets the continuous Q transform for audio file
         Parameters
             wav_path (str): Filepath to wav file
@@ -222,9 +224,15 @@ class AudioPreprocessor:
 
         return tempo, beat_frame, beat_time
 
-
-
+def ogg_to_wav(ogg_file_path):
+    wav_file_path = ogg_file_path.replace('.ogg', '.wav')
+    x = AudioSegment.from_file(ogg_file_path)
+    x.export(wav_file_path, format='wav')
+    return wav_file_path
 
 if __name__ == "__main__":
-    midi_file = '/Users/mymac/ACME/proj/v3_winter/score-following/data/midi/wtk1-fugue8.mid'
-    ap = AudioPreprocessor(midi_file)
+    midi_file = '../../data/midi/wtk1-fugue8.mid'
+    wav_file = ogg_to_wav('../../data/ogg_files/Kimiko_Ishizaka_-_Bach_-_Well-Tempered_Clavier,_Book_1_-_41_Prelude_No._21_in_B-flat_major,_BWV_866.ogg')
+
+    ap = AudioPreprocessor(midi_file, wav_file)   
+    cqt = abs(ap.continuous_q(wav_file))
