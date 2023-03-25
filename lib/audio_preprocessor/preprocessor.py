@@ -1,8 +1,14 @@
 ### A library used to preprocess audio data 
 from typing import *
 import py_midicsv as pm     # Used for MIDI preprocessing
+from multiset import Multiset
 import pandas as pd 
 import os 
+
+class InvalidMIDIFileException(Exception):
+    """An exception that is raised when a MIDI file is invalid
+    and cannot be parsed by the AudioPreprocessor"""
+    pass 
 
 class AudioPreprocessor: 
     """A class to preprocess audio and MIDI data to use in a 
@@ -20,14 +26,17 @@ class AudioPreprocessor:
     """
     ### CONSTANT ATTRIBUTES 
     NOTES_TRACK_NUMBER : int = 2 
-    NOTE_EVENT_NAMES : List[str] = ['Note_on_c', 'Note_off_c']
     MIDI_PITCH_COLUMN : int = 'event_value2'
+    ONSET_EVENT_NAME : str = 'Note_on_c'
+    OFFSET_EVENT_NAME : str = 'Note_off_c'
+    NOTE_EVENT_NAMES : List[str] = [ONSET_EVENT_NAME, OFFSET_EVENT_NAME]
 
     ### METHODS
     def __init__(self, midi_file : str):
         # Parse the MIDI to CSV, and store it in the parsed_csvs directory
         self.midi_file : str = midi_file 
         self.csv_file : str = self._midi_to_csv(midi_file)
+        self.chord_events : List[Tuple] = self._parse_csv(self.csv_file)
 
     def _midi_to_csv(self, midi_file : str) -> str:
         """Parse a MIDI file to a CSV file in the same folder 
@@ -58,9 +67,16 @@ class AudioPreprocessor:
         # Write the CSV out to the desired output location
         with open(csv_file, "w") as f:
             f.writelines(csv_string) 
+        
+        return csv_file 
 
     def _parse_csv(self, csv_path : str):
-        """Parses one of the MIDI CSVs into a sequence of note values"""
+        """Parses one of the MIDI CSVs into a sequence of note values.
+        
+        Parameters:
+            csv_path (str): A fully qualified filepath to the parsed \
+                CSV file 
+        """
         # Get the CSV in the format specified online
         col_names = ['track', 'time', 'event_name', 'event_value1', 'event_value2', 'event_value3', 'event_value4']
         piece = pd.read_csv(csv_path, names=col_names, sep=', ', engine='python')
@@ -68,7 +84,94 @@ class AudioPreprocessor:
         # Extract only the notes from the MIDI (ignore all extra info)
         piece = piece.loc[piece['track']==self.NOTES_TRACK_NUMBER]
         piece = piece.loc[piece['event_name'].isin(self.NOTE_EVENT_NAMES)]
+        piece[self.MIDI_PITCH_COLUMN] = pd.to_numeric(piece[self.MIDI_PITCH_COLUMN])
 
-        # 
+        # Get only the columns we need to process note info 
+        piece = piece[['time', 'event_name', self.MIDI_PITCH_COLUMN]]
+        piece.rename(columns = {'event_value2': 'MIDI_pitch_num'}, inplace=True)
 
-                
+        # Get individual note events as a list of tuples, sorted by 
+        # onset times 
+        note_events = self._get_note_info(piece)
+
+        # Get chord events as a list of tuples, and return them 
+        chord_events = self._get_chord_events(note_events)
+        return chord_events 
+
+    def _get_note_info(self, piece : pd.DataFrame) -> List[Tuple]:
+        """Parse note information from a DataFrame representation of the note
+        events in a MIDI file.
+        
+        Parameters:
+            piece (pd.Dataframe): A DataFrame containing columns \
+                [time, event_name, MIDI_pitch_num] 
+        
+        Returns:
+            note_events (List[Tuple]): A list with entries \
+                [(time, '+' (for onset) or '-' (for offset), MIDI Note Value)]
+
+        Raises:
+            InvalidMIDIFileException : If the number of onset events \
+                does not equal the number of offset events 
+        """
+        # Parse the onset and offset events
+        on_events = piece.loc[piece['event_name'] == self.ONSET_EVENT_NAME]
+        off_events = piece.loc[piece['event_name'] == self.OFFSET_EVENT_NAME]
+        
+        # Double check we have the same number of events. If not, terminate early
+        if len(on_events) != len(off_events):
+            msg = f"Error: {self.midi_file} has unequal number of note onsets and note offsets"
+            raise InvalidMIDIFileException(msg)
+        
+        # Parse note onsets and offsets as tuples 
+        on_events_tups = [(tup[0], '+', tup[1]) for tup in zip(on_events['time'], on_events['MIDI_pitch_num'])] 
+        off_events_tups = [(tup[0], '-', tup[1]) for tup in zip(off_events['time'], off_events['MIDI_pitch_num'])]
+
+        # Combine these two lists, and sort by time (and secondarily by '-' before '+', and lastly, by pitch number)
+        note_events = on_events_tups + off_events_tups 
+        note_events = sorted(note_events, key=lambda x:(-x[0], x[1], -x[2]), reverse=True)
+
+        return note_events 
+
+    def _get_chord_events(self, note_events : Sequence[Tuple]) -> List[Tuple]:
+        """Get chords from a sequence of note events.
+
+        Inspired by 
+        https://stackoverflow.com/questions/628837/how-to-divide-a-set-of-overlapping-ranges-into-non-overlapping-ranges
+
+        Parameters:
+            note_events (List[Tuple]): A list with entries \
+                [(time, '+' (for onset) or '-' (for offset), MIDI Note Value)]
+
+        Returns:
+            chord_events (List[Tuple]): A list with entries \
+                [([List of chord note_values], onset_time, offset_time)]
+                (intervals should be non-intersecting, and should span 
+                the entire time interval (with any silence being represented
+                by an empty list on that time interval))
+        """
+        chord_events = []            # A list of all interval chord events (onset, offset, {notes in chord})
+        currently_sounding = Multiset()   # Set of MIDI note values currently sounding
+        last_event_time = 0          # Used for subdividing intervals 
+        for cur_time, marker, midi_val in note_events:
+            # If we have moved our current time, record which notes were sounding
+            # from the previous event time to the current event time
+            if cur_time != last_event_time: # Current time splits into old interval
+                chord_events.append((last_event_time ,cur_time, sorted(list(set(currently_sounding)))))
+            
+            # Add/remove notes from currently sounding based off of what kind of event this is 
+            if marker == '+':       # Onset event 
+                currently_sounding.add(midi_val)
+            elif marker == '-':     # Offset event 
+                currently_sounding.discard(midi_val, 1)
+
+            # Update the event time 
+            last_event_time = cur_time 
+
+        # Return our chord events 
+        return chord_events 
+            
+
+if __name__ == "__main__":
+    midi_file = '/Users/mymac/ACME/proj/v3_winter/score-following/data/midi/wtk1-fugue8.mid'
+    ap = AudioPreprocessor(midi_file)
