@@ -5,6 +5,7 @@ from multiset import Multiset
 import pandas as pd 
 import os 
 import librosa
+import re
 from scipy.stats import norm
 from pydub import AudioSegment
 
@@ -225,7 +226,24 @@ class AudioPreprocessor:
         return tempo, beat_frame, beat_time
 
 def ogg_to_wav(ogg_file_path):
-    wav_file_path = ogg_file_path.replace('.ogg', '.wav')
+    """This function will convert ogg files to wav files and save them in \
+        a wav file"""
+    prelude = re.compile('Prelude')   # Check if we're working with prelude
+    fugue = re.compile('Fugue')       # or fugue. 
+
+    # This removes everything before the number
+    first_part = re.compile('../../data/ogg_files/Kimiko_Ishizaka_-_Bach_-_Well-Tempered_Clavier,_Book_1_[^A-Z][\w]*[\D]*')
+    number = re.sub(first_part, '', ogg_file_path)
+
+    # This removes everything after the number
+    second_part = re.compile('[\D]*\d*.ogg')
+    number = re.sub(second_part, '', number)    # This should be the number of the fugue / prelude
+
+    if fugue.search(ogg_file_path):        
+        wav_file_path = '../../data/wav_files/wtk1-fugue' + number + '.wav'
+    elif prelude.search(ogg_file_path):
+        wav_file_path = '../../data/wav_files/wtk1-prelude' + number + '.wav'
+    
     x = AudioSegment.from_file(ogg_file_path)
     x.export(wav_file_path, format='wav')
     return wav_file_path
@@ -236,3 +254,4 @@ if __name__ == "__main__":
 
     ap = AudioPreprocessor(midi_file, wav_file)   
     cqt = abs(ap.continuous_q(wav_file))
+    
