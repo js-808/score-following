@@ -227,16 +227,32 @@ class AudioPreprocessor:
         return tempo, beat_frame, beat_time
 
 
+def ogg_to_wav(ogg_file_path):
+    """This function will convert ogg files to wav files and save them in \
+        a wav file. This should work for each file name in the format given \
+        at https://en.wikipedia.org/wiki/The_Well-Tempered_Clavier"""
+    prelude = re.compile('Prelude')   # Check if we're working with prelude
+    fugue = re.compile('Fugue')       # or fugue. 
+
+    # This removes everything before the number
+    first_part = re.compile('../../data/ogg_files/Kimiko_Ishizaka_-_Bach_-_Well-Tempered_Clavier,_Book_1_[^A-Z][\w]*[\D]*')
+    number = re.sub(first_part, '', ogg_file_path)
+    # This removes everything after the number
+    second_part = re.compile('[\D]*\d*.ogg')
+    number = re.sub(second_part, '', number)    # This should be the number of the fugue / prelude
+
     # Reset the file path for the wav files
     if fugue.search(ogg_file_path):        
         wav_file_path = '../../data/wav_files/wtk1-fugue' + number + '.wav'
     elif prelude.search(ogg_file_path):
         wav_file_path = '../../data/wav_files/wtk1-prelude' + number + '.wav'
-    
+
     # Convert ogg files to wav files
     x = AudioSegment.from_file(ogg_file_path)
     x.export(wav_file_path, format='wav')
     return wav_file_path
+
+
 def mp3_to_wav_conversion(mp3_file):
     """Converts MP3 to WAV file in the same directory.
     
