@@ -9,6 +9,7 @@ from pydub import AudioSegment
 import re
 from scipy.stats import norm
 from pydub import AudioSegment
+import numpy as np
 
 class InvalidMIDIFileException(Exception):
     """An exception that is raised when a MIDI file is invalid
@@ -172,7 +173,7 @@ class AudioPreprocessor:
         # Return our chord events 
         return chord_events 
 
-    def continuous_q(self, wav_path, n_bins=88):
+    def continuous_q(self, n_bins=88):
         """Gets the continuous Q transform for audio file
         Parameters
             wav_path (str): Filepath to wav file
@@ -180,8 +181,8 @@ class AudioPreprocessor:
         
         Returns
             cqts (ndarray(n_bins, n_frames)): list of continuous Q transforms"""
-        y, sr = librosa.load(wav_path)
-        cqt = (librosa.cqt(y, sr=sr, n_bins=n_bins))
+        y, sr = librosa.load(self.wav_file)
+        cqt = np.abs(librosa.cqt(y, sr=sr, n_bins=n_bins))
 
         return cqt
 
