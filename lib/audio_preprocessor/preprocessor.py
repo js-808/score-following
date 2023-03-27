@@ -5,6 +5,7 @@ from multiset import Multiset
 import pandas as pd 
 import os 
 import librosa
+from pydub import AudioSegment
 
 class InvalidMIDIFileException(Exception):
     """An exception that is raised when a MIDI file is invalid
@@ -181,7 +182,7 @@ class AudioPreprocessor:
 
         return cqt
 
-    def get_mfcc(self, wav_path, delta_bool):
+    def get_mfcc(self, wav_path, delta_bool = False):
         """Gets the MFCC coefficients for an audio file as well as the \
             estimate of the derivative if desired
         
@@ -224,6 +225,21 @@ class AudioPreprocessor:
 
 
 
+def mp3_to_wav_conversion(mp3_file):
+    """Converts MP3 to WAV file in the same directory.
+    
+    Parameters:
+        mp3_file (str): A fully qualified path to the MP3 file to convert 
+    
+    Returns:
+        wav_file (str): A fully qualified path to the newly created WAV file
+    """
+    # Get output path to WAV file to export                                                                 
+    wav_file = os.path.splitext(mp3_file)[0] + '.wav'
+
+    # Convert wav to mp3                                                            
+    sound = AudioSegment.from_mp3(mp3_file)
+    sound.export(wav_file, format="wav")
 
 if __name__ == "__main__":
     midi_file = '/Users/mymac/ACME/proj/v3_winter/score-following/data/midi/wtk1-fugue8.mid'
