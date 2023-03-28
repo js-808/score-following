@@ -10,6 +10,8 @@ class InvalidTransformException(Exception):
     into the Score Follower"""
     pass 
 
+
+
 class ScoreFollower:
     """A class to follow along with an audio performance in the 
     correlated score.
@@ -18,14 +20,18 @@ class ScoreFollower:
     of frame-level score movements to use to follow the score.
     
     Attributes:
-        chord_events (List[Tuple]): A list of chord events in the style \
-            (onset_time, offset_time, [list of midi nums])
+        chord_events (List[Tuple]): A list of chord events from the score in \
+            in the style (onset_time, offset_time, [list of midi nums])
         audio_events ((num_samples, num_bins) ndarray)): A transformed \
             representation of the audio we'd like to follow
         num_samples (int) : The number of transformed audio samples 
         num_bins (int): The number of bins used in the transform 
+        chord_event_signals((len(chord_events), num_bins) ndarray):  A matrix \
+            where the i-th row gives the normalized frequency spectrum expected \
+            from the i-th chord in chord_events, with amplitudes reported across \
+            all of the num_bins bins. 
     """
-    ### CONSTANTS 
+    ### ---------------- CONSTANTS ---------------- ###
     MIDI_C1_NOTE_NUM : int = 24     # The midi representation of the note C1 
                                     #(the default minimum transform frequency)
     NUM_HARMONICS : int = 4         # The number of harmonics to replicate in 
@@ -35,8 +41,9 @@ class ScoreFollower:
     FRAME_LEVEL_VARIANCE : int = 10   # The variance of the number of frames being spent
                                               # in the sustain phase of a note 
 
-    ### METHODS 
-    def __init__(self, chord_events: Sequence[Tuple], audio_events : np.ndarray, 
+    ### ----------- CONSTRUCTOR METHODS ----------- ###
+    def __init__(self, chord_events: Sequence[Tuple], 
+                 audio_events : np.ndarray, 
                  audio_transform : str = 'cqt', 
                  transform_min_freq : Optional[float] = None):
         """Save chord events and audio events as attributes.
@@ -77,13 +84,24 @@ class ScoreFollower:
         
         # Create a (known) "hidden"-state sequence (with self loops) of the chord
         # and audio events based off of a negative-binomial distribution 
-        self.chord_sequence = self._initialize_chord_events(chord_events)
+        chord_sequence = self._initialize_chord_events(chord_events)
+
+        # Initialize a transition matrix for this state matrix 
+        self.A, self.chord_transition_lookup = self._create_transition_matrix(chord_sequence)
 
         # Get idealized chord frequency bin templates, based off of a mixture of Gaussians 
-        self.chord_templates = self._create_chord_templates(chord_events, frequency_bin_means)
+        chord_templates = self._create_chord_templates(chord_events, frequency_bin_means)
+        
+        # Populate a matrix where the i-th row contains the normalized frequency
+        # spectrum expected when we play the i-th chord in self.chord-sequence 
+        self.chord_template_signals = np.zeros((len(chord_sequence), self.num_bins))
+        for i,chord_event in enumerate(chord_sequence):
+            chord = chord_event[0]
+            self.chord_template_signals[i,:] = chord_templates[chord]
 
-
-    def _neg_bin_method_of_moments(self, mean: float, var: float) -> Tuple[int, float]:
+    def _neg_bin_method_of_moments(self, 
+                                   mean: float, 
+                                   var: float) -> Tuple[int, float]:
         """Derives the NegBin(n,p) distribution using the method of moments, \
         finding the parameters p (failure probability/probability of transition \
         to next state in the markov chain) and n (the number of allowed failures/state \
@@ -101,13 +119,14 @@ class ScoreFollower:
         p = min(max(mean / (mean + var), 0), 1)             # Make sure it's in the range [0,1]
         return n, p 
     
-    def _initialize_chord_events(self, chord_events: Sequence[Tuple]) -> List[Tuple]:
+    def _initialize_chord_events(self, 
+                                 chord_events: Sequence[Tuple]) -> List[Tuple]:
         """Create a sequence of chord events (tuples) of the style \
         (chord_label, chord_status, next_transition_prob, self_transition_prob), \
         where: \
             chord_label (Tuple(str)) : tuple of the form (midi_id_1, midi_id_2, ....) \
                 uniquely describing the MIDI values of the sounding pitches \
-            chord_status (str) : One of 'attack', 'sustain', or 'release' \
+            chord_status (str) : One of 'attack', 'sustain', or 'rest' \
             next_transition_prob (float): The probability of the state transitioning \
                 to the next sequential state \
             self_transition_prob (float): The probability of the state transitioning \
@@ -156,10 +175,49 @@ class ScoreFollower:
             sequence = [attack_event] * 2 + [sustain_event] * n 
             chord_sequence.extend(sequence) 
         
+        # Append silence of a very high variance at the beginning and end of the piece 
+        silence_mean_number_of_frames = 20 
+        silence_variance = 50 
+        n, p = self._neg_bin_method_of_moments(silence_mean_number_of_frames, silence_variance)
+        silence_event = ((), 'rest', p, 1-p)
+        silence_sequence = [silence_event] * n
+        chord_sequence = silence_sequence + chord_sequence + silence_sequence 
+
         # Return the chord sequence 
         return chord_sequence
+    
+    def _create_transition_matrix(self, chord_sequence : Sequence[Tuple]) -> Tuple[np.ndarray, Dict[str, Tuple]]:
+        """Creates the transition matrix for the given chord sequence.
+        
+        Parameters:
+            chord_sequence ((n,) List[Tuple]): The sequence of tuples described above, of the form \
+                (chord_label, chord_status, next_transition_prob, self_transition_prob)
+        
+        Returns:
+            A ((n,n) ndarray): The matrix of transition probabilities from
+                state to state across the state space.
+            index_lookup (Dict[int, Tuple]): A mapping from the index in the 
+                transition matrix to the chord information from chord_sequence
+        """
+        # Initialize probability array
+        n = len(chord_sequence)
+        A = np.zeros((n,n))
 
-    def _create_chord_templates(self, chord_events: Sequence[Tuple], 
+        # Populate probability array in order 
+        index_lookup = {}     # Mapping from index to chord it represents
+        for i in range(n-1):
+            chord = chord_sequence[i]
+            next_transition_prob, self_transition_prob = chord[-2], chord[-1]
+            A[i,i] = self_transition_prob 
+            A[i,i+1] = next_transition_prob
+            index_lookup[i] = chord 
+        A[-1,-1] = 1        # Infinite self loop at end (for silence)
+        
+        # Return the desired information
+        return A, index_lookup 
+
+    def _create_chord_templates(self, 
+                                chord_events: Sequence[Tuple], 
                                 frequency_bin_means: np.ndarray) -> Dict[Tuple, np.ndarray]:
         """Creates a lookup dictionary of a mixture-of-gaussians signal template \
         for each chord, with each template assuming an idealized scenario where \
@@ -212,8 +270,10 @@ class ScoreFollower:
                 for weight, harmonic in zip(weights, harmonics):
                     total_signal += (weight * norm.pdf(x, loc=harmonic, scale=10)) 
             
-            # Normalize the resulting signal, and return it 
-            return total_signal / np.sum(total_signal)
+            # Normalize the resulting signal if it isn't all zeros, and return it 
+            if not np.allclose(total_signal, np.zeros_like(x)):
+                total_signal /=  np.sum(total_signal)
+            return total_signal
         
         ### Run the above function for each unique chord to get the idealized frequency profile 
         ### for each unique chord.
@@ -222,5 +282,90 @@ class ScoreFollower:
             chord = tuple(chord_event[-1])      # Gets a tuple of form (note 1 MIDI ID, note 2 MIDI ID, etc.)
             if chord not in chord_idealized_freq_vecs:
                 chord_idealized_freq_vecs[chord] = total_ideal_signal(frequency_bin_means, chord)
+        
+        ### Ensure silence is part of these templates 
+        chord_idealized_freq_vecs[()] = total_ideal_signal(frequency_bin_means, ())
         return chord_idealized_freq_vecs
+
     
+    ### ----------- CALLABLE METHODS ----------- ###
+    def _find_spectrum_log_prob(self, signal: np.ndarray) -> float:
+        """Find the l2-norm error of the signal to the "ideal" spectrum
+        of the given chord. Return something inversely proportional to the
+        l2-norm error (the lower the error, the higher the probability).
+        
+        Parameters:
+            signal ((self.num_bins, ) ndarray) : An array representing the amplitude of the \
+                input signal in different frequency bins, normalized so they sum to 1
+            
+        Returns:
+            err ((num_chords_in_sequence, ) ndarray): log(e^{-(err)}) = -err, where err is 
+                the l2-error of the signal with each row (idealized signal) of \
+                self.chord_event_signals
+        """
+        # Take the l2-norm of the difference between each of the ideal signal rows 
+        # against the actual signal.
+        l2_err = np.linalg.norm(self.chord_template_signals - signal, axis=1)
+
+        # We want small errors to be good, and big errors.
+        # So if the error is big, it detracts from log probability
+        # more than if the error is small.
+        return -l2_err
+
+    def find_best_sequence(self):
+        """Uses a Viterbi-style algorithm to decode the best sequence through the \
+        chord-map of the piece, returning which chord is predicted to be sounding \
+        at each frame of the transformed audio data. \
+
+        Uses the idea from section 10.4 of the Viberbi Algorithm to \
+        find the most likely sequence.
+
+        Returns:
+            best_sequence ((self.num_samples_) ndarray): The best sequence 
+                through the same-shaped transformed audio samples.
+        """ 
+        # Initialize a giant matrix of bellman optimality stuff
+        num_chords_in_sequence = self.A.shape[0]
+        optimal_matrix = np.zeros((self.num_samples, num_chords_in_sequence))
+        optimizer_matrix = np.zeros((self.num_samples - 1, num_chords_in_sequence), dtype=np.int32)
+
+        # Initialize a vector of appropriate log-probabilities 
+        pi = np.repeat(-np.inf, num_chords_in_sequence)       # Initial state distribution 
+        pi[0] = 0               # [must start at first silence state - everything else
+                                # has probability zero, or log probability -infinity]
+        eta_0 = pi + self._find_spectrum_log_prob(self.audio_events[0])
+        optimal_matrix[0] = eta_0 
+        
+        # Iterate the forward portion of the Viterbi algorithm (finding all of the etas,
+        # and populating them into the lookup matrix optimal_matrix), using log-probabilities 
+        # (Instead of regular b's, we use _find_spectrum_prob() )
+        print("Populating Bellman log-probabilities . . .")
+        with np.errstate(divide='ignore'):  # Ignores trying to take log of zero
+            log_A = np.log(self.A)      # Log-probability of transition matrix
+            for t in range(1, self.num_samples):
+                print(f"Iteration {t}/{self.num_samples}", end='\r')
+                eta_prev = optimal_matrix[t-1] 
+                b_t = self._find_spectrum_log_prob(self.audio_events[t])
+                big_matrix = eta_prev + log_A + b_t[:,np.newaxis]
+                optimal_matrix[t] = np.max(big_matrix, axis=1)
+                optimizer_matrix[t-1] = np.argmax(big_matrix, axis=1) 
+        
+        # Now, iterate the backward portion of the Viterbi algorithm 
+        # to construct the state from end to beginning 
+        print("Populating best sequence . . .")
+        best_sequence = np.zeros(self.num_samples, dtype=np.int32) 
+        best_sequence[-1] = np.argmax(optimal_matrix[-1])
+        for i in range(2,self.num_samples+1):
+            best_sequence[-i] = optimizer_matrix[-i+1,best_sequence[-i+1]]
+        
+        # Return the best sequence indexes 
+        print("Done.")
+        return best_sequence 
+    
+
+
+
+
+
+
+
