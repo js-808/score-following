@@ -209,7 +209,7 @@ class ScoreFollower:
             chord = chord_sequence[i]
             next_transition_prob, self_transition_prob = chord[-2], chord[-1]
             A[i,i] = self_transition_prob 
-            A[i,i+1] = next_transition_prob
+            A[i+1,i] = next_transition_prob     # recall, i+1,i means probability of i going to i+1
             index_lookup[i] = chord 
         A[-1,-1] = 1        # Infinite self loop at end (for silence)
         
@@ -303,9 +303,11 @@ class ScoreFollower:
                 the l2-error of the signal with each row (idealized signal) of \
                 self.chord_event_signals
         """
+        normalized_signal = signal / np.sum(signal)
+
         # Take the l2-norm of the difference between each of the ideal signal rows 
         # against the actual signal.
-        l2_err = np.linalg.norm(self.chord_template_signals - signal, axis=1)
+        l2_err = np.linalg.norm(self.chord_template_signals - normalized_signal, axis=1)
 
         # We want small errors to be good, and big errors.
         # So if the error is big, it detracts from log probability
@@ -350,6 +352,10 @@ class ScoreFollower:
                 optimal_matrix[t] = np.max(big_matrix, axis=1)
                 optimizer_matrix[t-1] = np.argmax(big_matrix, axis=1) 
         
+        # Store these as class attributes 
+        self.optimal_matrix = optimal_matrix 
+        self.optimizer_matrix = optimizer_matrix
+
         # Now, iterate the backward portion of the Viterbi algorithm 
         # to construct the state from end to beginning 
         print("Populating best sequence . . .")
